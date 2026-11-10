@@ -1,0 +1,19 @@
+{
+  "armor": [
+    {"name":"Стёганый","category":"armor","armor_type":"light","ac_base":11,"ac_dex":"full","strength_req":0,"stealth_disadvantage":true,"weight":8,"price":{"value":5,"currency":"зм"},"description":"Лёгкий доспех. Прошитые слои ткани."},
+    {"name":"Кожаный","category":"armor","armor_type":"light","ac_base":11,"ac_dex":"full","strength_req":0,"stealth_disadvantage":false,"weight":10,"price":{"value":10,"currency":"зм"},"description":"Лёгкий доспех из вываренной кожи."},
+    {"name":"Проклёпанный кожаный","category":"armor","armor_type":"light","ac_base":12,"ac_dex":"full","strength_req":0,"stealth_disadvantage":false,"weight":13,"price":{"value":45,"currency":"зм"},"description":"Лёгкий доспех, усиленный заклёпками."},
+    {"name":"Шкурный","category":"armor","armor_type":"medium","ac_base":12,"ac_dex":"max2","strength_req":0,"stealth_disadvantage":false,"weight":12,"price":{"value":10,"currency":"зм"},"description":"Средний доспех из толстых мехов и шкур."},
+    {"name":"Кольчужная рубаха","category":"armor","armor_type":"medium","ac_base":13,"ac_dex":"max2","strength_req":0,"stealth_disadvantage":false,"weight":20,"price":{"value":50,"currency":"зм"},"description":"Средний доспех из переплетённых колец."},
+    {"name":"Чешуйчатый","category":"armor","armor_type":"medium","ac_base":14,"ac_dex":"max2","strength_req":0,"stealth_disadvantage":true,"weight":45,"price":{"value":50,"currency":"зм"},"description":"Средний доспех из металлических чешуек."},
+    {"name":"Кираса","category":"armor","armor_type":"medium","ac_base":14,"ac_dex":"max2","strength_req":0,"stealth_disadvantage":false,"weight":20,"price":{"value":400,"currency":"зм"},"description":"Средний доспех — металлический панцирь."},
+    {"name":"Полулаты","category":"armor","armor_type":"medium","ac_base":15,"ac_dex":"max2","strength_req":0,"stealth_disadvantage":true,"weight":40,"price":{"value":750,"currency":"зм"},"description":"Средний доспех из металлических пластин."},
+    {"name":"Колечный","category":"armor","armor_type":"heavy","ac_base":14,"ac_dex":"none","strength_req":0,"stealth_disadvantage":true,"weight":40,"price":{"value":30,"currency":"зм"},"description":"Тяжёлый доспех с нашитыми кольцами."},
+    {"name":"Кольчуга","category":"armor","armor_type":"heavy","ac_base":16,"ac_dex":"none","strength_req":13,"stealth_disadvantage":true,"weight":55,"price":{"value":75,"currency":"зм"},"description":"Тяжёлый доспех из металлических колец."},
+    {"name":"Наборный","category":"armor","armor_type":"heavy","ac_base":17,"ac_dex":"none","strength_req":15,"stealth_disadvantage":true,"weight":60,"price":{"value":200,"currency":"зм"},"description":"Тяжёлый доспех из вертикальных пластин."},
+    {"name":"Латы","category":"armor","armor_type":"heavy","ac_base":18,"ac_dex":"none","strength_req":15,"stealth_disadvantage":true,"weight":65,"price":{"value":1500,"currency":"зм"},"description":"Тяжёлый доспех из пластин, покрывающих всё тело."}
+  ],
+  "shields": [
+    {"name":"Щит","category":"shield","ac_bonus":2,"weight":6,"price":{"value":10,"currency":"зм"},"description":"Деревянный или металлический. +2 к КД."}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "food": [
+    {"name":"Паёк (малый)","category":"food","satiety":10,"weight":2,"price":{"value":5,"currency":"см"},"description":"Обезвоженная еда. Стандартный суточный паёк."},
+    {"name":"Хлеб","category":"food","satiety":5,"weight":0.5,"price":{"value":2,"currency":"мм"},"description":"Буханка хлеба."},
+    {"name":"Сыр (кусок)","category":"food","satiety":5,"weight":0.25,"price":{"value":1,"currency":"см"},"description":"Кусок сыра."},
+    {"name":"Вяленое мясо","category":"food","satiety":8,"weight":1,"price":{"value":1,"currency":"зм"},"description":"Полоски вяленого мяса."},
+    {"name":"Сумка с припасами","category":"food","satiety":40,"weight":15,"price":{"value":80,"currency":"зм"},"description":"Полный набор провизии для долгого отдыха."}
+  ]
+}
