@@ -130,8 +130,9 @@ def format_enemy_details(enemy: dict) -> str:
 def load_battle() -> dict:
     data = _load_json(BATTLE_FILE)
     if not data:
-        return {"enemies": []}
+        return {"enemies": [], "players": []}
     data.setdefault("enemies", [])
+    data.setdefault("players", [])
     return data
 
 
@@ -219,6 +220,28 @@ def set_battle_enemy_temp_hp(idx: int, amount: int) -> dict:
     entry["temp_hp"] = max(int(entry.get("temp_hp", 0) or 0), amount)
     save_battle(battle)
     return battle
+
+
+# ---------- Участники боя (группа) ----------
+def add_player_to_battle(codename: str) -> dict:
+    battle = load_battle()
+    if codename not in battle["players"]:
+        battle["players"].append(codename)
+    save_battle(battle)
+    return battle
+
+
+def remove_player_from_battle(codename: str) -> dict:
+    battle = load_battle()
+    if codename in battle["players"]:
+        battle["players"].remove(codename)
+    save_battle(battle)
+    return battle
+
+
+def is_player_in_battle(codename: str) -> bool:
+    battle = load_battle()
+    return codename in battle.get("players", [])
 
 
 # ============================================================

@@ -499,7 +499,7 @@
       "resources": {
         "Ярость": {
           "max": 3,
-          "current": 3,
+          "current": 2,
           "reset": "long"
         }
       },
@@ -710,9 +710,9 @@
   "resources": {
     "Ярость": {
       "max": 3,
-      "current": 3,
+      "current": 2,
       "reset": "long"
     }
   },
-  "xp": 100001400
+  "xp": 100001425
 }

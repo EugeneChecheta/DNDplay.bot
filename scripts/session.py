@@ -34,6 +34,7 @@ from scripts.enemies import (
     load_battle,
     add_enemy_to_battle, remove_enemy_from_battle, kill_enemy_from_battle,
     damage_battle_enemy, heal_battle_enemy, set_battle_enemy_temp_hp,
+    add_player_to_battle, remove_player_from_battle,
 )
 
 router = Router(name="session")
@@ -115,7 +116,7 @@ def consume_satiety(camp: dict, amount: int) -> int:
 
 
 # ============================================================
-#  Контейнеры
+#  Контейнеры (передача)
 # ============================================================
 def _total_mm(coins: dict) -> int:
     return sum(int(coins.get(k, 0) or 0) * COIN_TO_MM[k] for k in COIN_KEYS)
@@ -206,12 +207,6 @@ class Transfer(StatesGroup):
 
 
 class Battle(StatesGroup):
-    damage = State()
-    heal = State()
-    temp_hp = State()
-
-
-class EnemyBattle(StatesGroup):
     damage = State()
     heal = State()
     temp_hp = State()
@@ -425,15 +420,17 @@ async def cb_rest_long_free(callback: CallbackQuery, state: FSMContext):
 
 
 # ============================================================
-#  Битва
+#  БИТВА
 # ============================================================
 async def _render_battle_menu(callback: CallbackQuery):
     battle = load_battle()
     enemies = battle.get("enemies", [])
+    players = battle.get("players", [])
 
     text = "⚔️ *Битва*\n\n"
+
     if enemies:
-        text += "*Активные противники:*\n"
+        text += "*Противники:*\n"
         for i, e in enumerate(enemies):
             cur = int(e.get("current_hp", 0))
             mx = int(e.get("max_hp", 0))
@@ -444,19 +441,48 @@ async def _render_battle_menu(callback: CallbackQuery):
         text += "\n"
     else:
         text += "_Противников нет._\n\n"
+
+    if players:
+        text += "*Группа:*\n"
+        for codename in players:
+            char = load_character(codename)
+            if not char:
+                text += f"• _{codename}_ (не найден)\n"
+                continue
+            snap = get_current(char)
+            cur_hp = snap.get("current_hp", snap["hp"])
+            tmp = int(snap.get("temp_hp", 0) or 0)
+            tmp_str = f" (+{tmp} вр)" if tmp > 0 else ""
+            text += f"• {char['name']} — ❤️ {cur_hp}/{snap['hp']}{tmp_str}\n"
+        text += "\n"
+    else:
+        text += "_Группа пуста._\n\n"
+
     text += "Выберите действие:"
 
-    kb_rows = []
-    if enemies:
-        kb_rows.append([InlineKeyboardButton(
+    kb_rows = [
+        [InlineKeyboardButton(text="💔 Нанести урон", callback_data="sess_act_dmg")],
+        [InlineKeyboardButton(text="💚 Лечение", callback_data="sess_act_heal")],
+        [InlineKeyboardButton(text="✨ Временные хиты", callback_data="sess_act_temp")],
+        [InlineKeyboardButton(text="🔮 Ячейки заклинаний", callback_data="sess_act_slots")],
+        [InlineKeyboardButton(text="⚡ Ресурсы", callback_data="sess_act_res")],
+    ]
+    kb_rows.append([
+        InlineKeyboardButton(
+            text=f"👥 Группа ({len(players)})",
+            callback_data="sess_battle_players"),
+        InlineKeyboardButton(
             text=f"👹 Противники ({len(enemies)})",
-            callback_data="sess_battle_enemies")])
-    kb_rows.append([InlineKeyboardButton(
-        text="👤 Персонажи",
-        callback_data="sess_battle_chars")])
-    kb_rows.append([InlineKeyboardButton(
-        text="➕ Добавить противника",
-        callback_data="sess_battle_add")])
+            callback_data="sess_battle_enemies"),
+    ])
+    kb_rows.append([
+        InlineKeyboardButton(
+            text="➕ Добавить в группу",
+            callback_data="sess_battle_add_player"),
+        InlineKeyboardButton(
+            text="➕ Добавить противника",
+            callback_data="sess_battle_add"),
+    ])
     kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_menu")])
 
     await _safe_edit(callback.message, text, parse_mode="Markdown",
@@ -470,19 +496,626 @@ async def cb_battle(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data == "sess_battle_chars")
-async def cb_battle_chars(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    kb = chars_list_kb("sess_battle_char", back_cb="sess_battle")
-    await _safe_edit(callback.message, "⚔️ Выберите персонажа:",
-                     reply_markup=kb)
+# ---------- Выбор цели для действий ----------
+_ACTION_TITLES = {
+    "dmg": "💔 Нанести урон",
+    "heal": "💚 Лечение",
+    "temp": "✨ Временные хиты",
+}
+
+
+async def _show_target_selection(callback: CallbackQuery, action: str):
+    battle = load_battle()
+    enemies = battle.get("enemies", [])
+    players = battle.get("players", [])
+    title = _ACTION_TITLES.get(action, "Действие")
+
+    text = f"*{title}*\n\nВыберите цель:\n\n"
+    kb = []
+
+    if players:
+        text += "*Персонажи:*\n"
+        for codename in players:
+            char = load_character(codename)
+            if not char:
+                continue
+            snap = get_current(char)
+            cur_hp = snap.get("current_hp", snap["hp"])
+            tmp = int(snap.get("temp_hp", 0) or 0)
+            tmp_str = f" (+{tmp} вр)" if tmp > 0 else ""
+            kb.append([InlineKeyboardButton(
+                text=f"👤 {char['name']} — {cur_hp}/{snap['hp']}{tmp_str}",
+                callback_data=f"sess_tgt_p:{action}:{codename}")])
+        text += "\n"
+
+    if enemies:
+        text += "*Противники:*\n"
+        for i, e in enumerate(enemies):
+            cur = int(e.get("current_hp", 0))
+            mx = int(e.get("max_hp", 0))
+            tmp = int(e.get("temp_hp", 0) or 0)
+            marker = "💀" if cur <= 0 else "👹"
+            tmp_str = f" (+{tmp} вр)" if tmp > 0 else ""
+            kb.append([InlineKeyboardButton(
+                text=f"{marker} {e['name']} — {cur}/{mx}{tmp_str}",
+                callback_data=f"sess_tgt_e:{action}:{i}")])
+
+    if not kb:
+        await callback.answer("Нет целей", show_alert=True)
+        return
+
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle")])
+    await _safe_edit(callback.message, text, parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
 
 
-def _battle_card_text(char):
+@router.callback_query(F.data == "sess_act_dmg")
+async def cb_act_dmg(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_target_selection(callback, "dmg")
+
+
+@router.callback_query(F.data == "sess_act_heal")
+async def cb_act_heal(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_target_selection(callback, "heal")
+
+
+@router.callback_query(F.data == "sess_act_temp")
+async def cb_act_temp(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_target_selection(callback, "temp")
+
+
+# ---------- Обработка выбора цели: персонаж ----------
+@router.callback_query(F.data.startswith("sess_tgt_p:"))
+async def cb_target_player(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    action, codename = parts[1], parts[2]
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Персонаж не найден", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(target_kind="player", target_id=codename)
+
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="sess_battle")]])
+
+    if action == "dmg":
+        await state.set_state(Battle.damage)
+        await _safe_edit(callback.message,
+                         f"💔 *Урон — {char['name']}*\n\n"
+                         f"Введите количество урона (целое число):",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    elif action == "heal":
+        await state.set_state(Battle.heal)
+        await _safe_edit(callback.message,
+                         f"💚 *Лечение — {char['name']}*\n\n"
+                         f"Введите количество лечения (целое число):",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    elif action == "temp":
+        await state.set_state(Battle.temp_hp)
+        await _safe_edit(callback.message,
+                         f"✨ *Временные хиты — {char['name']}*\n\n"
+                         f"Введите количество (целое, 0 — снять):",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    else:
+        await callback.answer("Неизвестное действие", show_alert=True)
+        return
+    await callback.answer()
+
+
+# ---------- Обработка выбора цели: противник ----------
+@router.callback_query(F.data.startswith("sess_tgt_e:"))
+async def cb_target_enemy(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    action = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    battle = load_battle()
+    if idx < 0 or idx >= len(battle["enemies"]):
+        await callback.answer("Противник не найден", show_alert=True)
+        return
+    entry = battle["enemies"][idx]
+
+    await state.clear()
+    await state.update_data(target_kind="enemy", target_id=idx)
+
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="sess_battle")]])
+
+    if action == "dmg":
+        await state.set_state(Battle.damage)
+        await _safe_edit(callback.message,
+                         f"💔 *Урон — {entry['name']}*\n\nВведите количество урона:",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    elif action == "heal":
+        await state.set_state(Battle.heal)
+        await _safe_edit(callback.message,
+                         f"💚 *Лечение — {entry['name']}*\n\nВведите количество лечения:",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    elif action == "temp":
+        await state.set_state(Battle.temp_hp)
+        await _safe_edit(callback.message,
+                         f"✨ *Временные хиты — {entry['name']}*\n\n"
+                         f"Введите количество (0 — снять):",
+                         parse_mode="Markdown", reply_markup=back_kb)
+    else:
+        await callback.answer("Неизвестное действие", show_alert=True)
+        return
+    await callback.answer()
+
+
+# ---------- Обработчики ввода: урон ----------
+@router.message(Battle.damage)
+async def process_damage(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    if data.get("target_kind"):
+        # ===== НОВЫЙ БОЕВОЙ ПОТОК =====
+        kind = data.get("target_kind")
+        tid = data.get("target_id")
+        try:
+            amount = int((message.text or "").strip())
+        except ValueError:
+            await message.answer("Введите целое положительное число.")
+            return
+        if amount <= 0:
+            await message.answer("Урон должен быть положительным.")
+            return
+
+        if kind == "player":
+            try:
+                char = damage_character(tid, amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            snap = get_current(char)
+            cur = snap.get("current_hp", snap["hp"])
+            temp = int(snap.get("temp_hp", 0) or 0)
+            temp_str = f"\n✨ Временные: {temp}" if temp > 0 else ""
+            await state.clear()
+            await message.answer(
+                f"💔 Нанесено *{amount}* урона персонажу *{char['name']}*.\n\n"
+                f"❤️ HP: *{cur}/{snap['hp']}*{temp_str}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        else:  # enemy
+            try:
+                battle = damage_battle_enemy(int(tid), amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            if int(tid) >= len(battle["enemies"]):
+                await state.clear()
+                await message.answer(
+                    "Противник больше не в бою.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+                return
+            entry = battle["enemies"][int(tid)]
+            cur = int(entry.get("current_hp", 0))
+            mx = int(entry.get("max_hp", 0))
+            tmp = int(entry.get("temp_hp", 0) or 0)
+            temp_str = f"\n✨ Временные: {tmp}" if tmp > 0 else ""
+            killed = "\n\n💀 *Противник повержен!*" if cur <= 0 else ""
+            await state.clear()
+            await message.answer(
+                f"💔 Нанесено *{amount}* урона противнику *{entry['name']}*.\n\n"
+                f"❤️ HP: *{cur}/{mx}*{temp_str}{killed}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        return
+
+    # ===== СТАРЫЙ ПОТОК OOC =====
+    codename = data.get("battle_codename")
+    back_mode = data.get("back_mode", "ooc")
+    try:
+        amount = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Введите целое положительное число.")
+        return
+    if amount <= 0:
+        await message.answer("Урон должен быть положительным.")
+        return
+    try:
+        char = damage_character(codename, amount)
+    except ValueError as e:
+        await message.answer(f"Ошибка: {e}")
+        await state.clear()
+        return
     snap = get_current(char)
-    cur_hp = snap.get("current_hp", snap["hp"])
-    max_hp = snap["hp"]
+    cur = snap.get("current_hp", snap["hp"])
+    temp = int(snap.get("temp_hp", 0) or 0)
+    note = f"\n✨ Временные хиты: {temp}" if temp > 0 else ""
+    await state.clear()
+
+    back_cb = f"sess_ooc_char:char:{codename}"
+    menu_cb = "sess_ooc"
+    await message.answer(
+        f"💔 Нанесено *{amount}* урона.\n\n"
+        f"❤️ HP: *{cur}/{snap['hp']}*{note}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚔️ К карточке", callback_data=back_cb)],
+            [InlineKeyboardButton(text="🔙 В меню вне боя", callback_data=menu_cb)],
+        ]))
+
+
+# ---------- Обработчики ввода: лечение ----------
+@router.message(Battle.heal)
+async def process_heal(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    if data.get("target_kind"):
+        kind = data.get("target_kind")
+        tid = data.get("target_id")
+        try:
+            amount = int((message.text or "").strip())
+        except ValueError:
+            await message.answer("Введите целое положительное число.")
+            return
+        if amount <= 0:
+            await message.answer("Лечение должно быть положительным.")
+            return
+
+        if kind == "player":
+            try:
+                char = heal_character(tid, amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            snap = get_current(char)
+            await state.clear()
+            await message.answer(
+                f"💚 *{char['name']}* восстановил *{amount}* HP.\n\n"
+                f"❤️ HP: *{snap['current_hp']}/{snap['hp']}*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        else:
+            try:
+                battle = heal_battle_enemy(int(tid), amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            if int(tid) >= len(battle["enemies"]):
+                await state.clear()
+                await message.answer(
+                    "Противник больше не в бою.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+                return
+            entry = battle["enemies"][int(tid)]
+            await state.clear()
+            await message.answer(
+                f"💚 *{entry['name']}* восстановил *{amount}* HP.\n\n"
+                f"❤️ HP: *{entry.get('current_hp')}/{entry.get('max_hp')}*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        return
+
+    # OOC
+    codename = data.get("battle_codename")
+    try:
+        amount = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Введите целое положительное число.")
+        return
+    if amount <= 0:
+        await message.answer("Лечение должно быть положительным.")
+        return
+    try:
+        char = heal_character(codename, amount)
+    except ValueError as e:
+        await message.answer(f"Ошибка: {e}")
+        await state.clear()
+        return
+    snap = get_current(char)
+    await state.clear()
+    await message.answer(
+        f"💚 Восстановлено *{amount}* HP.\n\n"
+        f"❤️ HP: *{snap['current_hp']}/{snap['hp']}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚔️ К карточке",
+                                  callback_data=f"sess_ooc_char:char:{codename}")],
+            [InlineKeyboardButton(text="🔙 В меню вне боя", callback_data="sess_ooc")],
+        ]))
+
+
+# ---------- Обработчики ввода: временные хиты ----------
+@router.message(Battle.temp_hp)
+async def process_temp_hp(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    if data.get("target_kind"):
+        kind = data.get("target_kind")
+        tid = data.get("target_id")
+        try:
+            amount = int((message.text or "").strip())
+        except ValueError:
+            await message.answer("Введите целое неотрицательное число.")
+            return
+        if amount < 0:
+            await message.answer("Не может быть отрицательным.")
+            return
+
+        if kind == "player":
+            try:
+                char = add_temp_hp(tid, amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            snap = get_current(char)
+            await state.clear()
+            await message.answer(
+                f"✨ *{char['name']}* — временные хиты: *{snap.get('temp_hp', 0)}*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        else:
+            try:
+                battle = set_battle_enemy_temp_hp(int(tid), amount)
+            except ValueError as e:
+                await state.clear()
+                await message.answer(f"Ошибка: {e}")
+                return
+            if int(tid) >= len(battle["enemies"]):
+                await state.clear()
+                await message.answer(
+                    "Противник больше не в бою.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+                return
+            entry = battle["enemies"][int(tid)]
+            await state.clear()
+            await message.answer(
+                f"✨ *{entry['name']}* — временные хиты: *{entry.get('temp_hp', 0)}*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
+        return
+
+    # OOC
+    codename = data.get("battle_codename")
+    try:
+        amount = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Введите целое неотрицательное число.")
+        return
+    if amount < 0:
+        await message.answer("Не может быть отрицательным.")
+        return
+    try:
+        char = add_temp_hp(codename, amount)
+    except ValueError as e:
+        await message.answer(f"Ошибка: {e}")
+        await state.clear()
+        return
+    snap = get_current(char)
+    await state.clear()
+    await message.answer(
+        f"✨ Временные хиты: *{snap.get('temp_hp', 0)}*.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚔️ К карточке",
+                                  callback_data=f"sess_ooc_char:char:{codename}")],
+            [InlineKeyboardButton(text="🔙 В меню вне боя", callback_data="sess_ooc")],
+        ]))
+
+
+# ---------- Ячейки и ресурсы: выбор персонажа ----------
+async def _show_player_selection(callback: CallbackQuery, kind: str):
+    battle = load_battle()
+    players = battle.get("players", [])
+    if not players:
+        await callback.answer("В группе нет персонажей", show_alert=True)
+        return
+    titles = {"slots": "🔮 Ячейки заклинаний", "res": "⚡ Ресурсы"}
+    title = titles.get(kind, "Действие")
+    kb = []
+    for codename in players:
+        char = load_character(codename)
+        if not char:
+            continue
+        kb.append([InlineKeyboardButton(
+            text=char["name"],
+            callback_data=f"sess_p_{kind}:{codename}")])
+    if not kb:
+        await callback.answer("Нет доступных персонажей", show_alert=True)
+        return
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle")])
+    await _safe_edit(callback.message, f"*{title}*\n\nВыберите персонажа:",
+                     parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "sess_act_slots")
+async def cb_act_slots(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_player_selection(callback, "slots")
+
+
+@router.callback_query(F.data == "sess_act_res")
+async def cb_act_res(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_player_selection(callback, "res")
+
+
+@router.callback_query(F.data.startswith("sess_p_slots:"))
+async def cb_p_slots(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    snap = get_current(char)
+    slots = snap.get("spell_slots", {})
+    active = [(lvl, slots[str(lvl)]) for lvl in sorted(int(k) for k in slots.keys())
+              if slots[str(lvl)].get("max", 0) > 0]
+    if not active:
+        await callback.answer("У персонажа нет ячеек заклинаний", show_alert=True)
+        return
+    kb = []
+    for lvl, d in active:
+        cur = d.get("current", d["max"])
+        kb.append([
+            InlineKeyboardButton(text=f"➖ {lvl}ур",
+                                 callback_data=f"sess_p_slot_chg:{codename}:{lvl}:-1"),
+            InlineKeyboardButton(text=f"{lvl}ур {cur}/{d['max']}",
+                                 callback_data="noop_sess"),
+            InlineKeyboardButton(text=f"➕ {lvl}ур",
+                                 callback_data=f"sess_p_slot_chg:{codename}:{lvl}:1"),
+        ])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_act_slots")])
+    await _safe_edit(callback.message,
+                     f"🔮 *Ячейки — {char['name']}*\n\n➖ потратить, ➕ восстановить.",
+                     parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sess_p_slot_chg:"))
+async def cb_p_slot_chg(callback: CallbackQuery):
+    parts = callback.data.split(":", 3)
+    if len(parts) != 4:
+        await callback.answer()
+        return
+    codename = parts[1]
+    try:
+        lvl = int(parts[2]); delta = int(parts[3])
+    except ValueError:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    try:
+        if delta < 0:
+            spend_spell_slot(codename, lvl, 1)
+        else:
+            restore_spell_slot(codename, lvl, 1)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.answer("OK")
+    await cb_p_slots(callback)
+
+
+@router.callback_query(F.data.startswith("sess_p_res:"))
+async def cb_p_res(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    snap = get_current(char)
+    resources = snap.get("resources", {})
+    active = [(n, r) for n, r in resources.items() if r.get("max", 0) > 0]
+    if not active:
+        await callback.answer("У персонажа нет ресурсов", show_alert=True)
+        return
+    kb = []
+    for name, r in active:
+        cur = r.get("current", r["max"])
+        kb.append([
+            InlineKeyboardButton(text=f"➖ {name}",
+                                 callback_data=f"sess_p_res_chg:{codename}:{name}:-1"),
+            InlineKeyboardButton(text=f"{name} {cur}/{r['max']}",
+                                 callback_data="noop_sess"),
+            InlineKeyboardButton(text=f"➕ {name}",
+                                 callback_data=f"sess_p_res_chg:{codename}:{name}:1"),
+        ])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_act_res")])
+    await _safe_edit(callback.message,
+                     f"⚡ *Ресурсы — {char['name']}*\n\n➖ потратить, ➕ восстановить.",
+                     parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sess_p_res_chg:"))
+async def cb_p_res_chg(callback: CallbackQuery):
+    parts = callback.data.split(":", 3)
+    if len(parts) != 4:
+        await callback.answer()
+        return
+    codename = parts[1]; name = parts[2]
+    try:
+        delta = int(parts[3])
+    except ValueError:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    try:
+        if delta < 0:
+            spend_resource(codename, name, 1)
+        else:
+            restore_resource(codename, name, 1)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.answer("OK")
+    await cb_p_res(callback)
+
+
+# ---------- Группа ----------
+@router.callback_query(F.data == "sess_battle_players")
+async def cb_battle_players(callback: CallbackQuery):
+    battle = load_battle()
+    players = battle.get("players", [])
+    if not players:
+        await callback.answer("В группе нет персонажей", show_alert=True)
+        return
+    kb = []
+    for codename in players:
+        char = load_character(codename)
+        if not char:
+            kb.append([InlineKeyboardButton(
+                text=f"❓ {codename}",
+                callback_data=f"sess_battle_player:{codename}")])
+            continue
+        snap = get_current(char)
+        cur = snap.get("current_hp", snap["hp"])
+        kb.append([InlineKeyboardButton(
+            text=f"👤 {char['name']} — {cur}/{snap['hp']}",
+            callback_data=f"sess_battle_player:{codename}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle")])
+    await _safe_edit(callback.message,
+                     "👥 *Группа*",
+                     parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sess_battle_player:"))
+async def cb_battle_player_card(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Персонаж не найден", show_alert=True)
+        return
+    snap = get_current(char)
+    cur = snap.get("current_hp", snap["hp"])
+    mx = snap["hp"]
     temp = int(snap.get("temp_hp", 0) or 0)
     slots = snap.get("spell_slots", {})
     slot_parts = []
@@ -491,69 +1124,78 @@ def _battle_card_text(char):
         if d.get("max", 0) > 0:
             slot_parts.append(f"{lvl}ур {d.get('current', d['max'])}/{d['max']}")
     resources = snap.get("resources", {})
-    res_parts = []
-    for name, r in resources.items():
-        if r.get("max", 0) > 0:
-            res_parts.append(f"{name} {r.get('current', r['max'])}/{r['max']}")
-    lines = [f"⚔️ *{char['name']}*",
-             f"❤️ HP: {cur_hp}/{max_hp}"]
+    res_parts = [f"{n} {r.get('current', r['max'])}/{r['max']}"
+                 for n, r in resources.items() if r.get("max", 0) > 0]
+    lines = [f"👤 *{char['name']}*", f"❤️ HP: {cur}/{mx}"]
     if temp > 0:
         lines.append(f"✨ Временные: +{temp}")
     if slot_parts:
         lines.append(f"🔮 Ячейки: {', '.join(slot_parts)}")
     if res_parts:
         lines.append(f"⚡ Ресурсы: {', '.join(res_parts)}")
-    return "\n".join(lines)
 
-
-def _battle_card_kb(codename, mode="battle"):
-    if mode == "battle":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💔 Нанести урон",
-                                  callback_data=f"sess_dmg:{codename}")],
-            [InlineKeyboardButton(text="💚 Лечение",
-                                  callback_data=f"sess_heal:{codename}")],
-            [InlineKeyboardButton(text="✨ Временные хиты",
-                                  callback_data=f"sess_temp:{codename}")],
-            [InlineKeyboardButton(text="🔮 Ячейки заклинаний",
-                                  callback_data=f"sess_slots_menu:{codename}")],
-            [InlineKeyboardButton(text="⚡ Ресурсы",
-                                  callback_data=f"sess_res_menu:{codename}")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle_chars")],
-        ])
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💔 Нанести урон",
-                              callback_data=f"sess_ooc_dmg:{codename}")],
-        [InlineKeyboardButton(text="💚 Лечение",
-                              callback_data=f"sess_ooc_heal:{codename}")],
-        [InlineKeyboardButton(text="✨ Временные хиты",
-                              callback_data=f"sess_ooc_temp:{codename}")],
-        [InlineKeyboardButton(text="🔮 Ячейки заклинаний",
-                              callback_data=f"sess_ooc_slots_menu:{codename}")],
-        [InlineKeyboardButton(text="⚡ Ресурсы",
-                              callback_data=f"sess_ooc_res_menu:{codename}")],
-        [InlineKeyboardButton(text="📊 Дать опыт",
-                              callback_data=f"sess_ooc_xp:{codename}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="sess_ooc")],
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Убрать из боя",
+                              callback_data=f"sess_battle_remove_player:{codename}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle_players")],
     ])
-
-
-@router.callback_query(F.data.startswith("sess_battle_char:"))
-async def cb_battle_char(callback: CallbackQuery):
-    codename = _extract_char_codename(callback.data, "sess_battle_char")
-    if not codename:
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    char = load_character(codename)
-    if not char:
-        await callback.answer("Персонаж не найден.", show_alert=True)
-        return
-    await _safe_edit(callback.message, _battle_card_text(char), parse_mode="Markdown",
-                     reply_markup=_battle_card_kb(codename, "battle"))
+    await _safe_edit(callback.message, "\n".join(lines),
+                     parse_mode="Markdown", reply_markup=kb)
     await callback.answer()
 
 
-# ---------- Управление противниками в бою ----------
+@router.callback_query(F.data.startswith("sess_battle_remove_player:"))
+async def cb_battle_remove_player(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    try:
+        remove_player_from_battle(codename)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.answer("Убран из боя")
+    await _render_battle_menu(callback)
+
+
+@router.callback_query(F.data == "sess_battle_add_player")
+async def cb_battle_add_player(callback: CallbackQuery):
+    battle = load_battle()
+    in_battle = set(battle.get("players", []))
+    chars = list_characters()
+    kb = []
+    for c in chars:
+        if c["codename"] in in_battle:
+            continue
+        kb.append([InlineKeyboardButton(
+            text=c["name"],
+            callback_data=f"sess_battle_add_player_do:{c['codename']}")])
+    if not kb:
+        await callback.answer("Все персонажи уже в бою", show_alert=True)
+        return
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle")])
+    await _safe_edit(callback.message,
+                     "➕ *Добавить персонажа в группу*\n\nВыберите:",
+                     parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sess_battle_add_player_do:"))
+async def cb_battle_add_player_do(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Персонаж не найден", show_alert=True)
+        return
+    try:
+        add_player_to_battle(codename)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.answer(f"{char['name']} добавлен")
+    await _render_battle_menu(callback)
+
+
+# ---------- Противники: просмотр/убийство/удаление ----------
 @router.callback_query(F.data == "sess_battle_enemies")
 async def cb_battle_enemies(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -578,7 +1220,20 @@ async def cb_battle_enemies(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-def _enemy_card_text(entry: dict) -> str:
+@router.callback_query(F.data.startswith("sess_battle_enemy:"))
+async def cb_battle_enemy(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        idx = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    battle = load_battle()
+    if idx < 0 or idx >= len(battle["enemies"]):
+        await callback.answer("Противник не найден", show_alert=True)
+        return
+    entry = battle["enemies"][idx]
+
     cur = int(entry.get("current_hp", 0))
     mx = int(entry.get("max_hp", 0))
     tmp = int(entry.get("temp_hp", 0) or 0)
@@ -593,227 +1248,17 @@ def _enemy_card_text(entry: dict) -> str:
                  f"(ОП {enemy_data.get('xp', '?')})\n")
         if enemy_data.get("ac"):
             text += f"🛡 КД: {enemy_data['ac']}\n"
-    return text
 
-
-def _enemy_card_kb(idx: int, entry: dict) -> InlineKeyboardMarkup:
-    cur = int(entry.get("current_hp", 0))
-    rows = [
-        [InlineKeyboardButton(text="💔 Урон", callback_data=f"sess_enemy_dmg:{idx}"),
-         InlineKeyboardButton(text="💚 Лечение", callback_data=f"sess_enemy_heal:{idx}")],
-        [InlineKeyboardButton(text="✨ Временные хиты", callback_data=f"sess_enemy_temp:{idx}")],
-    ]
+    rows = []
     if cur <= 0:
         rows.append([InlineKeyboardButton(
             text="💀 Убить (+опыт)", callback_data=f"sess_enemy_kill:{idx}")])
     rows.append([InlineKeyboardButton(
         text="🗑 Убрать (без опыта)", callback_data=f"sess_enemy_remove:{idx}")])
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sess_battle_enemies")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@router.callback_query(F.data.startswith("sess_battle_enemy:"))
-async def cb_battle_enemy(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    try:
-        idx = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    battle = load_battle()
-    if idx < 0 or idx >= len(battle["enemies"]):
-        await callback.answer("Противник не найден", show_alert=True)
-        return
-    entry = battle["enemies"][idx]
-    await _safe_edit(callback.message, _enemy_card_text(entry),
-                     parse_mode="Markdown",
-                     reply_markup=_enemy_card_kb(idx, entry))
+    await _safe_edit(callback.message, text, parse_mode="Markdown",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await callback.answer()
-
-
-@router.callback_query(F.data.startswith("sess_enemy_dmg:"))
-async def cb_enemy_dmg(callback: CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    await state.clear()
-    await state.update_data(enemy_idx=idx)
-    await state.set_state(EnemyBattle.damage)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_enemy:{idx}")]])
-    await _safe_edit(callback.message, "💔 Введите количество урона (целое число):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(EnemyBattle.damage)
-async def process_enemy_damage(message: Message, state: FSMContext):
-    data = await state.get_data()
-    idx = data.get("enemy_idx", -1)
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое положительное число.")
-        return
-    if amount <= 0:
-        await message.answer("Урон должен быть положительным.")
-        return
-    try:
-        battle = damage_battle_enemy(idx, amount)
-    except ValueError as e:
-        await state.clear()
-        await message.answer(f"Ошибка: {e}")
-        return
-    await state.clear()
-    if idx >= len(battle["enemies"]):
-        await message.answer(
-            "Противник больше не в бою.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
-        return
-    entry = battle["enemies"][idx]
-    cur = int(entry.get("current_hp", 0))
-    tmp = int(entry.get("temp_hp", 0) or 0)
-    temp_note = f"\n✨ Временные: +{tmp}" if tmp > 0 else ""
-    killed_note = "\n\n💀 *Противник повержен!* Появилась кнопка «Убить»." if cur <= 0 else ""
-    await message.answer(
-        f"💔 Нанесено *{amount}* урона.\n\n{_enemy_card_text(entry).split(chr(10), 1)[1].lstrip()}{temp_note}{killed_note}",
-        parse_mode="Markdown",
-        reply_markup=_enemy_card_kb(idx, entry))
-
-
-@router.callback_query(F.data.startswith("sess_enemy_heal:"))
-async def cb_enemy_heal(callback: CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    await state.clear()
-    await state.update_data(enemy_idx=idx)
-    await state.set_state(EnemyBattle.heal)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_enemy:{idx}")]])
-    await _safe_edit(callback.message, "💚 Введите количество лечения (целое число):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(EnemyBattle.heal)
-async def process_enemy_heal(message: Message, state: FSMContext):
-    data = await state.get_data()
-    idx = data.get("enemy_idx", -1)
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое положительное число.")
-        return
-    if amount <= 0:
-        await message.answer("Лечение должно быть положительным.")
-        return
-    try:
-        battle = heal_battle_enemy(idx, amount)
-    except ValueError as e:
-        await state.clear()
-        await message.answer(f"Ошибка: {e}")
-        return
-    await state.clear()
-    if idx >= len(battle["enemies"]):
-        await message.answer(
-            "Противник больше не в бою.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
-        return
-    entry = battle["enemies"][idx]
-    await message.answer(
-        f"💚 Восстановлено *{amount}* HP.\n\n{_enemy_card_text(entry)}",
-        parse_mode="Markdown",
-        reply_markup=_enemy_card_kb(idx, entry))
-
-
-@router.callback_query(F.data.startswith("sess_enemy_temp:"))
-async def cb_enemy_temp(callback: CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    await state.clear()
-    await state.update_data(enemy_idx=idx)
-    await state.set_state(EnemyBattle.temp_hp)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="0 (снять)",
-                              callback_data=f"sess_enemy_temp_set:{idx}:0")],
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_enemy:{idx}")]])
-    await _safe_edit(callback.message,
-                     "✨ Введите количество временных хитов (целое, 0 — снять):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(EnemyBattle.temp_hp)
-async def process_enemy_temp_hp(message: Message, state: FSMContext):
-    data = await state.get_data()
-    idx = data.get("enemy_idx", -1)
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое неотрицательное число.")
-        return
-    if amount < 0:
-        await message.answer("Не может быть отрицательным.")
-        return
-    try:
-        battle = set_battle_enemy_temp_hp(idx, amount)
-    except ValueError as e:
-        await state.clear()
-        await message.answer(f"Ошибка: {e}")
-        return
-    await state.clear()
-    if idx >= len(battle["enemies"]):
-        await message.answer(
-            "Противник больше не в бою.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")]]))
-        return
-    entry = battle["enemies"][idx]
-    await message.answer(
-        f"✨ Временные хиты: *{entry.get('temp_hp', 0)}*.\n\n{_enemy_card_text(entry)}",
-        parse_mode="Markdown",
-        reply_markup=_enemy_card_kb(idx, entry))
-
-
-@router.callback_query(F.data.startswith("sess_enemy_temp_set:"))
-async def cb_enemy_temp_set(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":", 2)
-    if len(parts) != 3:
-        await callback.answer()
-        return
-    try:
-        idx = int(parts[1])
-        amount = int(parts[2])
-    except ValueError:
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    await state.clear()
-    try:
-        battle = set_battle_enemy_temp_hp(idx, amount)
-    except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
-        return
-    if idx >= len(battle["enemies"]):
-        await callback.answer("Противник больше не в бою", show_alert=True)
-        return
-    entry = battle["enemies"][idx]
-    await callback.answer(f"Временные хиты: {entry.get('temp_hp', 0)}")
-    await _safe_edit(callback.message, _enemy_card_text(entry),
-                     parse_mode="Markdown",
-                     reply_markup=_enemy_card_kb(idx, entry))
 
 
 @router.callback_query(F.data.startswith("sess_enemy_kill:"))
@@ -825,15 +1270,15 @@ async def cb_enemy_kill(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка данных", show_alert=True)
         return
     try:
-        _, xp, enemy_name = kill_enemy_from_battle(idx)
+        battle, xp, enemy_name = kill_enemy_from_battle(idx)
     except ValueError as e:
         await callback.answer(str(e), show_alert=True)
         return
 
-    chars = list_characters()
+    players_in_battle = list(battle.get("players", []))
     results = []
-    for c in chars:
-        char = load_character(c["codename"])
+    for codename in players_in_battle:
+        char = load_character(codename)
         if not char:
             continue
         snap = get_current(char)
@@ -842,7 +1287,7 @@ async def cb_enemy_kill(callback: CallbackQuery, state: FSMContext):
             results.append(f"• {char['name']}: без сознания (0 HP) — без опыта")
             continue
         try:
-            result = add_xp(c["codename"], xp)
+            result = add_xp(codename, xp)
             note = f"• {char['name']}: +{xp} опыта"
             if result.get("advanced"):
                 note += f" (⬆️ ур. {result['old_level']} → {result['new_level']})"
@@ -855,9 +1300,9 @@ async def cb_enemy_kill(callback: CallbackQuery, state: FSMContext):
     text = f"💀 *{enemy_name}* убит!\n\n"
     text += f"📊 Опыт за убийство: *{xp}*\n\n"
     if results:
-        text += "*Получили опыт:*\n" + "\n".join(results)
+        text += "*Получили опыт (участники боя):*\n" + "\n".join(results)
     else:
-        text += "_Некому давать опыт._"
+        text += "_В группе нет персонажей, способных получить опыт._"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚔️ В битву", callback_data="sess_battle")],
@@ -962,334 +1407,6 @@ async def cb_battle_add_do(callback: CallbackQuery, state: FSMContext):
     await _render_battle_menu(callback)
 
 
-# ---------- Урон / лечение персонажа в бою ----------
-async def _rerender_battle(callback: CallbackQuery, codename: str):
-    char = load_character(codename)
-    await _safe_edit(callback.message, _battle_card_text(char), parse_mode="Markdown",
-                     reply_markup=_battle_card_kb(codename, "battle"))
-
-
-@router.callback_query(F.data.startswith("sess_dmg:"))
-async def cb_dmg(callback: CallbackQuery, state: FSMContext):
-    codename = callback.data.split(":", 1)[1]
-    await state.clear()
-    await state.update_data(battle_codename=codename, back_mode="battle")
-    await state.set_state(Battle.damage)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_char:char:{codename}")]])
-    await _safe_edit(callback.message,
-                     "💔 Введите количество урона (целое число):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(Battle.damage)
-async def process_damage(message: Message, state: FSMContext):
-    data = await state.get_data()
-    codename = data.get("battle_codename")
-    back_mode = data.get("back_mode", "battle")
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое положительное число.")
-        return
-    if amount <= 0:
-        await message.answer("Урон должен быть положительным.")
-        return
-    try:
-        char = damage_character(codename, amount)
-    except ValueError as e:
-        await message.answer(f"Ошибка: {e}")
-        await state.clear()
-        return
-    snap = get_current(char)
-    cur = snap.get("current_hp", snap["hp"])
-    temp = int(snap.get("temp_hp", 0) or 0)
-    note = f"\n✨ Временные хиты: {temp}" if temp > 0 else ""
-    await state.clear()
-
-    if back_mode == "ooc":
-        back_cb = f"sess_ooc_char:char:{codename}"
-        menu_cb = "sess_ooc"
-        card_text = "⚔️ К карточке"
-        menu_text = "🔙 В меню вне боя"
-    else:
-        back_cb = f"sess_battle_char:char:{codename}"
-        menu_cb = "sess_battle"
-        card_text = "⚔️ К карточке боя"
-        menu_text = "🔙 В меню битвы"
-
-    await message.answer(
-        f"💔 Нанесено *{amount}* урона.\n\n"
-        f"❤️ HP: *{cur}/{snap['hp']}*{note}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=card_text, callback_data=back_cb)],
-            [InlineKeyboardButton(text=menu_text, callback_data=menu_cb)],
-        ]))
-
-
-@router.callback_query(F.data.startswith("sess_heal:"))
-async def cb_heal(callback: CallbackQuery, state: FSMContext):
-    codename = callback.data.split(":", 1)[1]
-    await state.clear()
-    await state.update_data(battle_codename=codename, back_mode="battle")
-    await state.set_state(Battle.heal)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_char:char:{codename}")]])
-    await _safe_edit(callback.message,
-                     "💚 Введите количество лечения (целое число):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(Battle.heal)
-async def process_heal(message: Message, state: FSMContext):
-    data = await state.get_data()
-    codename = data.get("battle_codename")
-    back_mode = data.get("back_mode", "battle")
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое положительное число.")
-        return
-    if amount <= 0:
-        await message.answer("Лечение должно быть положительным.")
-        return
-    try:
-        char = heal_character(codename, amount)
-    except ValueError as e:
-        await message.answer(f"Ошибка: {e}")
-        await state.clear()
-        return
-    snap = get_current(char)
-    await state.clear()
-
-    if back_mode == "ooc":
-        back_cb = f"sess_ooc_char:char:{codename}"
-        menu_cb = "sess_ooc"
-        card_text = "⚔️ К карточке"
-        menu_text = "🔙 В меню вне боя"
-    else:
-        back_cb = f"sess_battle_char:char:{codename}"
-        menu_cb = "sess_battle"
-        card_text = "⚔️ К карточке боя"
-        menu_text = "🔙 В меню битвы"
-
-    await message.answer(
-        f"💚 Восстановлено *{amount}* HP.\n\n"
-        f"❤️ HP: *{snap['current_hp']}/{snap['hp']}*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=card_text, callback_data=back_cb)],
-            [InlineKeyboardButton(text=menu_text, callback_data=menu_cb)],
-        ]))
-
-
-@router.callback_query(F.data.startswith("sess_temp:"))
-async def cb_temp(callback: CallbackQuery, state: FSMContext):
-    codename = callback.data.split(":", 1)[1]
-    await state.clear()
-    await state.update_data(battle_codename=codename, back_mode="battle")
-    await state.set_state(Battle.temp_hp)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="0 (снять)",
-                              callback_data=f"sess_temp_set:{codename}:0")],
-        [InlineKeyboardButton(text="🔙 Отмена",
-                              callback_data=f"sess_battle_char:char:{codename}")]])
-    await _safe_edit(callback.message,
-                     "✨ Введите количество временных хитов (целое, 0 — снять):",
-                     reply_markup=kb)
-    await callback.answer()
-
-
-@router.message(Battle.temp_hp)
-async def process_temp_hp(message: Message, state: FSMContext):
-    data = await state.get_data()
-    codename = data.get("battle_codename")
-    back_mode = data.get("back_mode", "battle")
-    try:
-        amount = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите целое неотрицательное число.")
-        return
-    if amount < 0:
-        await message.answer("Не может быть отрицательным.")
-        return
-    try:
-        char = add_temp_hp(codename, amount)
-    except ValueError as e:
-        await message.answer(f"Ошибка: {e}")
-        await state.clear()
-        return
-    snap = get_current(char)
-    await state.clear()
-
-    if back_mode == "ooc":
-        back_cb = f"sess_ooc_char:char:{codename}"
-        menu_cb = "sess_ooc"
-        card_text = "⚔️ К карточке"
-        menu_text = "🔙 В меню вне боя"
-    else:
-        back_cb = f"sess_battle_char:char:{codename}"
-        menu_cb = "sess_battle"
-        card_text = "⚔️ К карточке боя"
-        menu_text = "🔙 В меню битвы"
-
-    await message.answer(
-        f"✨ Временные хиты: *{snap.get('temp_hp', 0)}*.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=card_text, callback_data=back_cb)],
-            [InlineKeyboardButton(text=menu_text, callback_data=menu_cb)],
-        ]))
-
-
-@router.callback_query(F.data.startswith("sess_temp_set:"))
-async def cb_temp_set(callback: CallbackQuery):
-    parts = callback.data.split(":", 2)
-    if len(parts) != 3:
-        await callback.answer()
-        return
-    codename, amount_s = parts[1], parts[2]
-    try:
-        amount = int(amount_s)
-    except ValueError:
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    try:
-        char = add_temp_hp(codename, amount)
-    except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
-        return
-    snap = get_current(char)
-    await callback.answer(f"Временные хиты: {snap.get('temp_hp', 0)}")
-    await _rerender_battle(callback, codename)
-
-
-@router.callback_query(F.data.startswith("sess_slots_menu:"))
-async def cb_slots_menu(callback: CallbackQuery):
-    codename = callback.data.split(":", 1)[1]
-    char = load_character(codename)
-    if not char:
-        await callback.answer("Не найдено", show_alert=True)
-        return
-    snap = get_current(char)
-    slots = snap.get("spell_slots", {})
-    active_levels = []
-    for lvl in sorted(int(k) for k in slots.keys()):
-        d = slots[str(lvl)]
-        if d.get("max", 0) > 0:
-            active_levels.append((lvl, d))
-    if not active_levels:
-        await callback.answer("У персонажа нет ячеек заклинаний", show_alert=True)
-        return
-    kb = []
-    for lvl, d in active_levels:
-        cur = d.get("current", d["max"])
-        kb.append([
-            InlineKeyboardButton(
-                text=f"➖ {lvl}ур",
-                callback_data=f"sess_slot_chg:{codename}:{lvl}:-1"),
-            InlineKeyboardButton(
-                text=f"{lvl}ур {cur}/{d['max']}",
-                callback_data="noop_sess"),
-            InlineKeyboardButton(
-                text=f"➕ {lvl}ур",
-                callback_data=f"sess_slot_chg:{codename}:{lvl}:1"),
-        ])
-    kb.append([InlineKeyboardButton(text="🔙 Назад",
-                                    callback_data=f"sess_battle_char:char:{codename}")])
-    await _safe_edit(callback.message,
-                     "🔮 *Ячейки заклинаний*\n\nНажмите ➖ чтобы потратить, ➕ чтобы восстановить.",
-                     parse_mode="Markdown",
-                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("sess_slot_chg:"))
-async def cb_slot_chg(callback: CallbackQuery):
-    parts = callback.data.split(":", 3)
-    if len(parts) != 4:
-        await callback.answer()
-        return
-    codename = parts[1]
-    try:
-        lvl = int(parts[2]); delta = int(parts[3])
-    except ValueError:
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    try:
-        if delta < 0:
-            char = spend_spell_slot(codename, lvl, 1)
-        else:
-            char = restore_spell_slot(codename, lvl, 1)
-    except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
-        return
-    await callback.answer("OK")
-    await cb_slots_menu(callback)
-
-
-@router.callback_query(F.data.startswith("sess_res_menu:"))
-async def cb_res_menu(callback: CallbackQuery):
-    codename = callback.data.split(":", 1)[1]
-    char = load_character(codename)
-    if not char:
-        await callback.answer("Не найдено", show_alert=True)
-        return
-    snap = get_current(char)
-    resources = snap.get("resources", {})
-    active = [(n, r) for n, r in resources.items() if r.get("max", 0) > 0]
-    if not active:
-        await callback.answer("У персонажа нет ресурсов", show_alert=True)
-        return
-    kb = []
-    for name, r in active:
-        cur = r.get("current", r["max"])
-        kb.append([
-            InlineKeyboardButton(text=f"➖ {name}",
-                                 callback_data=f"sess_res_chg:{codename}:{name}:-1"),
-            InlineKeyboardButton(text=f"{name} {cur}/{r['max']}",
-                                 callback_data="noop_sess"),
-            InlineKeyboardButton(text=f"➕ {name}",
-                                 callback_data=f"sess_res_chg:{codename}:{name}:1"),
-        ])
-    kb.append([InlineKeyboardButton(text="🔙 Назад",
-                                    callback_data=f"sess_battle_char:char:{codename}")])
-    await _safe_edit(callback.message,
-                     "⚡ *Ресурсы*\n\n➖ — потратить 1, ➕ — восстановить 1.",
-                     parse_mode="Markdown",
-                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("sess_res_chg:"))
-async def cb_res_chg(callback: CallbackQuery):
-    parts = callback.data.split(":", 3)
-    if len(parts) != 4:
-        await callback.answer()
-        return
-    codename = parts[1]; name = parts[2]
-    try:
-        delta = int(parts[3])
-    except ValueError:
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
-    try:
-        if delta < 0:
-            char = spend_resource(codename, name, 1)
-        else:
-            char = restore_resource(codename, name, 1)
-    except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
-        return
-    await callback.answer("OK")
-    await cb_res_menu(callback)
-
-
 @router.callback_query(F.data == "noop_sess")
 async def noop_sess(callback: CallbackQuery):
     await callback.answer()
@@ -1342,6 +1459,24 @@ def _ooc_card_text(char):
     return "\n".join(lines)
 
 
+def _ooc_card_kb(codename):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💔 Нанести урон",
+                              callback_data=f"sess_ooc_dmg:{codename}")],
+        [InlineKeyboardButton(text="💚 Лечение",
+                              callback_data=f"sess_ooc_heal:{codename}")],
+        [InlineKeyboardButton(text="✨ Временные хиты",
+                              callback_data=f"sess_ooc_temp:{codename}")],
+        [InlineKeyboardButton(text="🔮 Ячейки заклинаний",
+                              callback_data=f"sess_ooc_slots_menu:{codename}")],
+        [InlineKeyboardButton(text="⚡ Ресурсы",
+                              callback_data=f"sess_ooc_res_menu:{codename}")],
+        [InlineKeyboardButton(text="📊 Дать опыт",
+                              callback_data=f"sess_ooc_xp:{codename}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="sess_ooc")],
+    ])
+
+
 @router.callback_query(F.data.startswith("sess_ooc_char:"))
 async def cb_ooc_char(callback: CallbackQuery):
     codename = _extract_char_codename(callback.data, "sess_ooc_char")
@@ -1353,7 +1488,7 @@ async def cb_ooc_char(callback: CallbackQuery):
         await callback.answer("Персонаж не найден.", show_alert=True)
         return
     await _safe_edit(callback.message, _ooc_card_text(char), parse_mode="Markdown",
-                     reply_markup=_battle_card_kb(codename, "ooc"))
+                     reply_markup=_ooc_card_kb(codename))
     await callback.answer()
 
 
@@ -1417,15 +1552,15 @@ async def cb_ooc_temp_set(callback: CallbackQuery):
         await callback.answer("Ошибка данных", show_alert=True)
         return
     try:
-        char = add_temp_hp(codename, amount)
+        add_temp_hp(codename, amount)
     except ValueError as e:
         await callback.answer(str(e), show_alert=True)
         return
+    char = load_character(codename)
     snap = get_current(char)
     await callback.answer(f"Временные хиты: {snap.get('temp_hp', 0)}")
-    char = load_character(codename)
     await _safe_edit(callback.message, _ooc_card_text(char), parse_mode="Markdown",
-                     reply_markup=_battle_card_kb(codename, "ooc"))
+                     reply_markup=_ooc_card_kb(codename))
 
 
 @router.callback_query(F.data.startswith("sess_ooc_slots_menu:"))
@@ -1482,9 +1617,9 @@ async def cb_ooc_slot_chg(callback: CallbackQuery):
         return
     try:
         if delta < 0:
-            char = spend_spell_slot(codename, lvl, 1)
+            spend_spell_slot(codename, lvl, 1)
         else:
-            char = restore_spell_slot(codename, lvl, 1)
+            restore_spell_slot(codename, lvl, 1)
     except ValueError as e:
         await callback.answer(str(e), show_alert=True)
         return
@@ -1539,9 +1674,9 @@ async def cb_ooc_res_chg(callback: CallbackQuery):
         return
     try:
         if delta < 0:
-            char = spend_resource(codename, name, 1)
+            spend_resource(codename, name, 1)
         else:
-            char = restore_resource(codename, name, 1)
+            restore_resource(codename, name, 1)
     except ValueError as e:
         await callback.answer(str(e), show_alert=True)
         return

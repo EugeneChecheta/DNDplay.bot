@@ -48,10 +48,10 @@ XP_TABLE = {
 ASI_LEVELS = [4, 8, 12, 16, 19]
 
 ALL_SKILLS = [
-    "Акробатика", "Анализ", "Атлетика", "Внимательность", "Выживание",
-    "Выступление", "Запугивание", "История", "Ловкость рук", "Магия",
-    "Медицина", "Обман", "Природа", "Проницательность", "Религия",
-    "Скрытность", "Убеждение", "Уход за животными",
+    "Акробатика", "Атлетика", "Восприятие", "Выживание", "Выступление",
+    "Запугивание", "История", "Ловкость рук", "Медицина", "Обман",
+    "Обращение с животными", "Природа", "Проницательность", "Расследование",
+    "Религия", "Скрытность", "Тайная магия", "Убеждение"
 ]
 
 ALL_STATS = ["Сила", "Ловкость", "Телосложение",
@@ -81,8 +81,11 @@ THIRD_CASTER_SLOTS = {
 }
 FULL_CASTER_CLASSES = {"Волшебник", "Жрец", "Друид", "Бард", "Чародей"}
 HALF_CASTER_CLASSES = {"Паладин", "Следопыт"}
-THIRD_CASTER_ARCHETYPES = {"Мистический рыцарь", "Мистический ловкач"}
-THIRD_CASTER_CLASS = "Воин"
+# Third-caster archetypes: явное соответствие архетип → класс
+THIRD_CASTER_ARCHETYPES = {
+    "Мистический рыцарь": "Воин",
+    "Мистический ловкач": "Плут",
+}
 
 _COIN_TO_MM = {"mm": 1, "sm": 10, "zm": 100, "pm": 1000}
 _COIN_SHORT = {"mm": "мм", "sm": "см", "zm": "зм", "pm": "пм"}
@@ -144,7 +147,15 @@ def _load_json(path):
     if not p.exists():
         return None
     with open(p, "r", encoding="utf-8") as f:
-        return json.load(f)
+        text = f.read()
+    # Файлы правил могут начинаться со строк-комментариев вида
+    # "// rules/races/аасимар.json". json.load их не переваривает —
+    # поэтому отбрасываем такие строки перед парсингом.
+    lines = [
+        ln for ln in text.splitlines()
+        if not ln.lstrip().startswith("//")
+    ]
+    return json.loads("\n".join(lines))
 
 
 def _find_json_by_name(directory: Path, name: str):
@@ -169,7 +180,11 @@ def get_available_races():
         return []
     result = []
     for p in sorted(RULES_RACES_DIR.glob("*.json")):
-        data = _load_json(p)
+        try:
+            data = _load_json(p)
+        except Exception as e:
+            logging.warning("characters: не удалось прочитать %s: %s", p, e)
+            continue
         if data and data.get("name"):
             result.append(data["name"])
     return result
@@ -180,7 +195,11 @@ def get_available_classes():
         return []
     result = []
     for p in sorted(RULES_CLASSES_DIR.glob("*.json")):
-        data = _load_json(p)
+        try:
+            data = _load_json(p)
+        except Exception as e:
+            logging.warning("characters: не удалось прочитать %s: %s", p, e)
+            continue
         if data and data.get("name"):
             result.append(data["name"])
     return result
@@ -328,8 +347,9 @@ def _slots_for_level(classes: dict, char_level: int, archetype=None) -> dict:
             slots[i] += cnt
     third_level = 0
     if archetype in THIRD_CASTER_ARCHETYPES:
+        third_class = THIRD_CASTER_ARCHETYPES[archetype]
         for cls, lvl in classes.items():
-            if cls == THIRD_CASTER_CLASS:
+            if cls == third_class:
                 third_level += lvl // 3
     if third_level > 0:
         arr = THIRD_CASTER_SLOTS.get(min(third_level, 20), [])
@@ -343,8 +363,14 @@ def _init_spell_slots(classes, char_level, archetype=None) -> dict:
     return {str(lvl): {"max": m, "current": m} for lvl, m in max_slots.items()}
 
 
-# ---------- Ресурсы (ярость, второе дыхание и т.п.) ----------
+# ---------- Ресурсы (ярость, ци, единицы чародейства, канал и т.п.) ----------
 _RAGE_USES = [0, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6]
+# Очки ци: 0 на 1-м, = уровень со 2-го (2..20)
+_KI_USES = [0, 0] + list(range(2, 21))
+# Единицы чародейства: 0 на 1-м, = уровень со 2-го
+_SORCERY_USES = [0, 0] + list(range(2, 21))
+# Божественный канал: 1 (2-5 ур.), 2 (6-17 ур.), 3 (18-20 ур.)
+_CHANNEL_USES = [0, 0, 1, 1, 1, 1] + [2] * 12 + [3, 3, 3]
 
 
 def _init_resources(classes: dict, level: int, archetype=None) -> dict:
@@ -357,6 +383,18 @@ def _init_resources(classes: dict, level: int, archetype=None) -> dict:
             resources["Второе дыхание"] = {"max": 1, "current": 1, "reset": "long"}
             if lvl >= 2:
                 resources["Всплеск действий"] = {"max": 1, "current": 1, "reset": "short"}
+        elif cls == "Монах":
+            ki = _KI_USES[min(lvl, 20)]
+            if ki > 0:
+                resources["Очки ци"] = {"max": ki, "current": ki, "reset": "short"}
+        elif cls == "Чародей":
+            sp = _SORCERY_USES[min(lvl, 20)]
+            if sp > 0:
+                resources["Единицы чародейства"] = {"max": sp, "current": sp, "reset": "long"}
+        elif cls == "Жрец":
+            cd = _CHANNEL_USES[min(lvl, 20)]
+            if cd > 0:
+                resources["Божественный канал"] = {"max": cd, "current": cd, "reset": "short"}
     return resources
 
 
@@ -389,7 +427,6 @@ def calculate_hp(char) -> int:
 
 # ---------- XP и груз ----------
 def get_char_xp(char) -> int:
-    """Возвращает накопленный XP персонажа. Если поле отсутствует — выводим из уровня."""
     xp = char.get("xp")
     if xp is None:
         xp = XP_TABLE.get(char.get("current_level", 1), 0)
@@ -428,9 +465,8 @@ def get_pending_asi_levels(char) -> list:
 
 # ---------- AC (КД) ----------
 def _has_unarmored_defense(char) -> bool:
-    """Проверяет, есть ли у персонажа 'Защита без доспехов'."""
     classes = char.get("classes", {})
-    if "Варвар" in classes:
+    if "Варвар" in classes or "Монах" in classes:
         return True
     try:
         snap = get_current(char)
@@ -446,6 +482,8 @@ def _calc_ac(char) -> int:
     snap = get_current(char)
     dex_mod = (snap["stats"].get("Ловкость", 10) - 10) // 2
     con_mod = (snap["stats"].get("Телосложение", 10) - 10) // 2
+    wis_mod = (snap["stats"].get("Мудрость", 10) - 10) // 2
+    classes = char.get("classes", {})
     inv = char.get("inventory", {}) or {}
     items = inv.get("items", []) or []
     armor = None
@@ -466,8 +504,9 @@ def _calc_ac(char) -> int:
         elif dxt == "max2":
             ac += min(dex_mod, 2)
     else:
-        # Без доспехов — учитываем Защиту без доспехов (варвар)
-        if _has_unarmored_defense(char):
+        if "Монах" in classes:
+            ac = 10 + dex_mod + wis_mod
+        elif "Варвар" in classes:
             ac = 10 + dex_mod + con_mod
         else:
             ac = 10 + dex_mod
@@ -650,7 +689,7 @@ def _rebuild(char, snapshot):
         "stats": snapshot["stats"],
     })
 
-    # Ресурсы (ярость и т.п.) — сохраняем текущие
+    # Ресурсы (ярость, ци, единицы чародейства, канал и т.п.) — сохраняем текущие
     old_resources = snapshot.get("resources", {})
     new_resources = _init_resources(
         snapshot["classes"], snapshot["level"], archetype)
@@ -752,7 +791,6 @@ def _migrate_equipment(char) -> None:
 
 
 def _migrate_combat_state(char) -> None:
-    """Добавляет поля current_hp, temp_hp, resources, current в spell_slots."""
     for lvl_str, snap in char.get("levels", {}).items():
         snap.setdefault("current_hp", snap.get("hp", 1))
         snap.setdefault("temp_hp", 0)
@@ -889,7 +927,6 @@ def add_level(codename: str, char_class: str) -> dict:
     _rebuild(char, new_snapshot)
     levels[str(new_lvl)] = new_snapshot
     char["current_level"] = new_lvl
-    # XP не опускается ниже порога для достигнутого уровня
     char["xp"] = max(get_char_xp(char), XP_TABLE.get(new_lvl, 0))
     _save_character(char)
     return char
@@ -923,6 +960,29 @@ def reset_levels(codename: str, keep_above: bool = False) -> dict:
                 del levels[lvl_str]
         char["current_level"] = min_lvl
         char["xp"] = XP_TABLE.get(min_lvl, 0)
+    _save_character(char)
+    return char
+
+
+# ---------- Базовые характеристики ----------
+def set_base_stat(codename: str, stat: str, value: int) -> dict:
+    """
+    Изменяет БАЗОВОЕ значение характеристики (base_stats).
+    Расовые бонусы, ASI-бонусы и бонусы от черт применяются поверх —
+    их значения и логика не затрагиваются.
+    Изменение сразу пересобирает все уровни персонажа.
+    """
+    char = load_character(codename)
+    if not char:
+        raise ValueError("Персонаж не найден.")
+    if stat not in ALL_STATS:
+        raise ValueError(f"Неизвестная характеристика: {stat}")
+    if value < 1 or value > 20:
+        raise ValueError("Базовое значение должно быть от 1 до 20.")
+    base = char.setdefault("base_stats", {s: 10 for s in ALL_STATS})
+    base[stat] = int(value)
+    for lvl_str, snap in char["levels"].items():
+        _rebuild(char, snap)
     _save_character(char)
     return char
 
@@ -1035,7 +1095,6 @@ def set_asi_feat(codename: str, asi_level: int, feat_name: str) -> dict:
 
 # ---------- Боевое состояние ----------
 def damage_character(codename: str, amount: int) -> dict:
-    """Наносит урон. Сначала списываются временные хиты, затем основные."""
     char = load_character(codename)
     if not char:
         raise ValueError("Персонаж не найден.")
@@ -1070,7 +1129,6 @@ def heal_character(codename: str, amount: int) -> dict:
 
 
 def add_temp_hp(codename: str, amount: int) -> dict:
-    """Временные хиты не складываются — берётся максимум."""
     char = load_character(codename)
     if not char:
         raise ValueError("Персонаж не найден.")
@@ -1160,7 +1218,6 @@ def restore_spell_slot(codename: str, level: int, amount: int = 1) -> dict:
 
 
 def long_rest_character(codename: str) -> dict:
-    """Долгий отдых: полные хиты, ячейки, ресурсы; временные хиты снимаются."""
     char = load_character(codename)
     if not char:
         raise ValueError("Персонаж не найден.")
@@ -1177,16 +1234,6 @@ def long_rest_character(codename: str) -> dict:
 
 # ---------- Опыт ----------
 def add_xp(codename: str, amount: int) -> dict:
-    """Начисляет опыт персонажу.
-
-    Возвращает словарь с результатом:
-      - char: обновлённый персонаж
-      - old_level, new_level, target_level
-      - xp_gained, old_xp, total_xp
-      - advanced: True если current_level повышен
-      - need_add_level: True если целевой уровень не добавлен в /characters
-      - next_missing_level: номер первого недостающего уровня
-    """
     char = load_character(codename)
     if not char:
         raise ValueError("Персонаж не найден.")
@@ -1233,9 +1280,18 @@ def add_xp(codename: str, amount: int) -> dict:
     return result
 
 
+def reset_character_xp(codename: str) -> dict:
+    char = load_character(codename)
+    if not char:
+        raise ValueError("Персонаж не найден.")
+    char["xp"] = 0
+    char["current_level"] = 1
+    _save_character(char)
+    return char
+
+
 # ---------- Правка максимальных хитов уровня ----------
 def set_level_max_hp(codename: str, level: int, hp: int) -> dict:
-    """Устанавливает максимальное значение HP для указанного уровня."""
     char = load_character(codename)
     if not char:
         raise ValueError("Персонаж не найден.")
@@ -1249,7 +1305,6 @@ def set_level_max_hp(codename: str, level: int, hp: int) -> dict:
     snap["hp"] = hp
     if "current_hp" in snap:
         if snap["current_hp"] >= old_hp:
-            # Если был на максимуме — поднимаем/опускаем текущие до нового максимума
             snap["current_hp"] = hp
         else:
             snap["current_hp"] = min(snap["current_hp"], hp)
@@ -1464,6 +1519,31 @@ def stats_allocation_keyboard(stats: dict):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
+def base_stats_keyboard(codename: str, char) -> InlineKeyboardMarkup:
+    """Клавиатура редактирования БАЗОВЫХ характеристик (base_stats)."""
+    base = char.get("base_stats", {s: 10 for s in ALL_STATS})
+    try:
+        current = get_current(char).get("stats", {})
+    except Exception:
+        current = {}
+    kb = []
+    for stat in ALL_STATS:
+        bv = base.get(stat, 10)
+        cv = current.get(stat, bv)
+        kb.append([
+            InlineKeyboardButton(
+                text="◀", callback_data=f"bstat_dec:{codename}:{stat}"),
+            InlineKeyboardButton(
+                text=f"{stat} {bv}→{cv}",
+                callback_data=f"bstat_reset:{codename}:{stat}"),
+            InlineKeyboardButton(
+                text="▶", callback_data=f"bstat_inc:{codename}:{stat}"),
+        ])
+    kb.append([InlineKeyboardButton(
+        text="🔙 К карточке", callback_data=f"view:{codename}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
 def char_view_keyboard(codename: str, char=None):
     rows = [
         [InlineKeyboardButton(text="🎯 Навыки", callback_data=f"skills:{codename}")],
@@ -1473,6 +1553,8 @@ def char_view_keyboard(codename: str, char=None):
         [InlineKeyboardButton(text="📊 Уровни", callback_data=f"levels:{codename}")],
         [InlineKeyboardButton(text="🎒 Инвентарь", callback_data=f"items_char:{codename}")],
         [InlineKeyboardButton(text="❤️ Макс. хиты", callback_data=f"hp_edit:{codename}")],
+        [InlineKeyboardButton(text="🔧 Базовые характеристики",
+                              callback_data=f"bstat_menu:{codename}")],
     ]
     if char is not None and char.get("current_level", 1) >= 3 and not char.get("archetype"):
         rows.append([InlineKeyboardButton(
@@ -1509,6 +1591,8 @@ def levels_keyboard(codename: str, char):
     if len(levels) > 1:
         kb.append([InlineKeyboardButton(
             text="🗑 Сбросить уровни", callback_data=f"reset_lvls:{codename}")])
+    kb.append([InlineKeyboardButton(
+        text="🗑 Сбросить опыт", callback_data=f"reset_xp:{codename}")])
     kb.append([InlineKeyboardButton(
         text="🔙 К карточке", callback_data=f"view:{codename}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -1634,6 +1718,8 @@ async def help_cmd(callback: CallbackQuery):
         "  • +1 к двум, или\n"
         "  • *взять черту* вместо характеристик.\n\n"
         "❤️ *Макс. хиты* — редактируются в карточке персонажа для каждого уровня отдельно.\n\n"
+        "🔧 *Базовые характеристики* — редактируются в карточке; бонусы расы, "
+        "ASI и черт сохраняются, изменения применяются ко всем уровням сразу.\n\n"
         "🎒 *Предметы (раздел /items):*\n"
         "• Выберите персонажа → его инвентарь.\n"
         "• Добавляйте предметы из каталога, надевайте доспехи и щиты (влияет на КД).\n"
@@ -1645,10 +1731,7 @@ async def help_cmd(callback: CallbackQuery):
         "• Долгий отдых: 40 единиц сытости в сундуке лагеря, либо *сюжетный* без еды.\n"
         "• Передача монет и предметов между персонажами и лагерем.\n"
         "• Битва: урон (сначала списываются временные хиты), лечение, трата ячеек и ресурсов.\n"
-        "• *Вне боя:* лечение/урон/ячейки/ресурсы + начисление опыта.\n"
-        "  При получении опыта, если целевой уровень уже добавлен в /characters,\n"
-        "  персонаж автоматически перескочит на него со всеми бонусами.\n"
-        "  Если уровень не добавлен — бот предложит перейти в меню прокачки.\n\n"
+        "• *Вне боя:* лечение/урон/ячейки/ресурсы + начисление опыта.\n\n"
         "⚖️ *Грузоподъёмность* = Сила × 15 фнт.\n\n"
         "🔄 *Пересоздание:* «Уровни» → «🗑 Сбросить уровни» → «🔄 Пересоздать»."
     )
@@ -2181,6 +2264,63 @@ async def view_character(callback: CallbackQuery):
 
 
 # ============================================================
+#  Навыки (Добавление)
+# ============================================================
+@router.callback_query(F.data.startswith("add_skill_menu:"))
+async def add_skill_menu(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    kb = []
+    row = []
+    for s in ALL_SKILLS:
+        row.append(InlineKeyboardButton(text=s, callback_data=f"add_skill:{codename}:{s}"))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"skills:{codename}")])
+    await callback.message.edit_text(
+        "🎯 *Добавление навыка*\n\nВыберите навык для добавления:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("add_skill:"))
+async def add_skill(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    codename = parts[1]
+    skill_name = parts[2]
+    
+    if skill_name not in ALL_SKILLS:
+        await callback.answer("Неверный навык", show_alert=True)
+        return
+
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Персонаж не найден", show_alert=True)
+        return
+    if skill_name in char.get("extra_skills", []):
+        await callback.answer("Этот навык уже добавлен", show_alert=True)
+        return
+    
+    char.setdefault("extra_skills", []).append(skill_name)
+    for lvl_str, snap in char["levels"].items():
+        _rebuild(char, snap)
+    _save_character(char)
+    await callback.message.edit_text(
+        f"✅ Навык *{skill_name}* добавлен.\n\n{format_character(char)}",
+        parse_mode="Markdown",
+        reply_markup=char_view_keyboard(codename, char)
+    )
+    await callback.answer("Навык добавлен")
+
+
+# ============================================================
 #  Редактирование максимальных хитов
 # ============================================================
 @router.callback_query(F.data.startswith("hp_edit:"))
@@ -2270,6 +2410,66 @@ async def hp_edit_save(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="❤️ Ещё изменить", callback_data=f"hp_edit:{codename}")],
             [InlineKeyboardButton(text="👤 К карточке", callback_data=f"view:{codename}")],
         ]))
+
+
+# ============================================================
+#  Базовые характеристики (редактирование base_stats)
+# ============================================================
+@router.callback_query(F.data.startswith("bstat_menu:"))
+async def bstat_menu(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    char = load_character(codename)
+    if not char:
+        await callback.message.edit_text("Персонаж не найден.", reply_markup=main_menu())
+        await callback.answer()
+        return
+    text = (
+        f"🔧 *Базовые характеристики — {char['name']}*\n\n"
+        f"Формат кнопки: `база → итог` (итог с учётом расы и ASI на текущем уровне).\n\n"
+        f"◀ / ▶ — изменить на 1, нажатие на название — сброс к 10.\n"
+        f"_Изменения сразу применяются ко всем уровням персонажа; "
+        f"расовые бонусы, ASI и бонусы от черт сохраняются._"
+    )
+    await callback.message.edit_text(
+        text, parse_mode="Markdown",
+        reply_markup=base_stats_keyboard(codename, char))
+    await callback.answer()
+
+
+@router.callback_query(
+    F.data.startswith("bstat_inc:")
+    | F.data.startswith("bstat_dec:")
+    | F.data.startswith("bstat_reset:")
+)
+async def bstat_change(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    action, codename, stat = parts
+    if stat not in ALL_STATS:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+    char = load_character(codename)
+    if not char:
+        await callback.answer("Персонаж не найден", show_alert=True)
+        return
+    base = char.get("base_stats", {s: 10 for s in ALL_STATS})
+    current = base.get(stat, 10)
+    if action == "bstat_inc":
+        new_value = min(20, current + 1)
+    elif action == "bstat_dec":
+        new_value = max(1, current - 1)
+    else:  # bstat_reset
+        new_value = 10
+    try:
+        char = set_base_stat(codename, stat, new_value)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.message.edit_reply_markup(
+        reply_markup=base_stats_keyboard(codename, char))
+    await callback.answer(f"{stat}: {new_value}")
 
 
 # ============================================================
@@ -2401,6 +2601,7 @@ async def view_skills(callback: CallbackQuery):
                 text += f" _{s['type']}_"
             text += f"\n{s.get('description', '')}\n\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎯 Добавить навык", callback_data=f"add_skill_menu:{codename}")],
         [InlineKeyboardButton(text="🔙 К карточке", callback_data=f"view:{codename}")]])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     await callback.answer()
@@ -2821,6 +3022,22 @@ async def reset_lvls_menu(callback: CallbackQuery):
         f"Выберите, что сбросить.",
         parse_mode="Markdown", reply_markup=reset_levels_keyboard(codename, char))
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("reset_xp:"))
+async def reset_xp_cb(callback: CallbackQuery):
+    codename = callback.data.split(":", 1)[1]
+    try:
+        char = reset_character_xp(codename)
+    except ValueError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"✅ Опыт сброшен. Текущий уровень: *{char['current_level']}*.\n\n{format_character(char)}",
+        parse_mode="Markdown",
+        reply_markup=char_view_keyboard(codename, char)
+    )
+    await callback.answer("Опыт сброшен")
 
 
 # ============================================================

@@ -1,9 +1,13 @@
 {
   "food": [
     {"name":"Паёк (малый)","category":"food","satiety":10,"weight":2,"price":{"value":5,"currency":"см"},"description":"Обезвоженная еда. Стандартный суточный паёк."},
-    {"name":"Хлеб","category":"food","satiety":5,"weight":0.5,"price":{"value":2,"currency":"мм"},"description":"Буханка хлеба."},
+    {"name":"Лепёшка с бараньим жиром","category":"food","satiety":5,"weight":0.5,"price":{"value":1,"currency":"см"},"description":"Сытная и не очень большая лепёшка, которую удобно брать с собой в дорогу."},
+    {"name":"Чай с травами","category":"food","satiety":3,"weight":0.5,"price":{"value":1,"currency":"см"},"description":"Плотный отвар местных жителей. Лучше не знать, откуда берётся наполнение для этого чая."},
+    {"name":"Похлёбка (миска)","category":"food","satiety":4,"weight":0.5,"price":{"value":1,"currency":"см"},"description":"Странно, почему котёл с этой похлёбкой не заканчивается у поварихи?"},
     {"name":"Сыр (кусок)","category":"food","satiety":5,"weight":0.25,"price":{"value":1,"currency":"см"},"description":"Кусок сыра."},
-    {"name":"Вяленое мясо","category":"food","satiety":8,"weight":1,"price":{"value":1,"currency":"зм"},"description":"Полоски вяленого мяса."},
-    {"name":"Сумка с припасами","category":"food","satiety":40,"weight":15,"price":{"value":80,"currency":"зм"},"description":"Полный набор провизии для долгого отдыха."}
+    {"name":"Вяленое мясо","category":"food","satiety":8,"weight":1,"price":{"value":1,"currency":"см"},"description":"Полоски вяленого мяса."},
+    {"name":"Сумка с припасами","category":"food","satiety":40,"weight":15,"price":{"value":80,"currency":"см"},"description":"Полный набор провизии для долгого отдыха."},
+    {"name":"Мясо скорпионоа","category":"food","satiety":5,"weight":1,"price":{"value":3,"currency":"см"},"description":"Не лучшая еда по вкусу, но питательная и сама приползает к обедне."},
+    {"name":"Мясо зверя","category":"food","satiety":6,"weight":1,"price":{"value":2,"currency":"см"},"description":"Даже эта жёсткая пища позволит прожить на один день больше, чем мы заслуживаем."}
   ]
 }
